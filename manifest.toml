@@ -1,0 +1,69 @@
+schema_version = 1
+plugin_name = "timesfm"
+
+[image]
+reference = "ghcr.io/auto-nomics/autonomics/timesfm@sha256:9fa439cb6b84df08bf686e4e9e69993ec9223b2f713a6b205c2dce373ca33991"
+tag = "2.5-200m-r1"
+upstream = "google-research TimesFM (timesfm[torch]==3.0.2 runner) with the Apache-2.0 google/timesfm-2.5-200m-pytorch checkpoint @ 1d952420fba87f3c6dee4f240de0f1a0fbc790e3"
+license = "Apache-2.0"
+
+# Offline by construction: the Dockerfile bakes the TimesFM 2.5 checkpoint
+# into /opt/timesfm/checkpoint and verifies its sha256 at build time, so the
+# node runs against the hardened default network profile (isolated, no
+# egress) with TIMESFM_LOCAL_FILES_ONLY=true. Do not relax either half.
+#
+# Baked-runner family: the image carries the timesfm_service package (COPY
+# app /app) and every parameter travels through TIMESFM_* environment
+# variables, so the command below is interpreter + fixed argv with no
+# script — the deseq2 pattern.
+[[nodes]]
+kind = "timesfm_forecast"
+desc = "Runs official TimesFM 2.5 univariate forecasting in an offline OCI image."
+doc = """
+Univariate forecasting with the official TimesFM 2.5 decoder; the model is
+never reimplemented. Input is one JSON File whose `target` key holds either
+a numeric array or a two-dimensional `target` batch (at most 32 series; a
+`series` key is accepted as a fallback). Returns a forecast JSON artifact
+(point forecast plus mean/0.1-0.9 quantiles) and an execution log. The
+pinned image contains the Apache-2.0 TimesFM 2.5 checkpoint
+(google/timesfm-2.5-200m-pytorch @ 1d952420), so inference is reproducible
+without network egress.
+
+horizon defaults to 12 (1-256) and overrides any `horizon` inside the
+request JSON; max_context defaults to 1024 (1-16128) and is the decoder
+context window the input series are compiled against.
+"""
+timeout_secs = 1800
+artifact_prefix = "/artifacts/timesfm_forecast"
+
+[nodes.ports]
+inputs = [{ type = "file" }]
+outputs = [
+  { path = "forecast_result.json", format = "timesfm_forecast_json" },
+  { path = "forecast.log", format = "timesfm_log" },
+]
+
+[nodes.params]
+horizon = { type = "int", default = 12, min = 1.0, max = 256.0, doc = "Number of future points to forecast for every input series" }
+max_context = { type = "int", default = 1024, min = 1.0, max = 16128.0, doc = "Context window compiled into the official TimesFM decoder" }
+
+[nodes.command]
+interpreter = "python"
+argv = ["-m", "timesfm_service.runner"]
+
+[nodes.command.env]
+TIMESFM_CHECKPOINT = "/opt/timesfm/checkpoint"
+TIMESFM_REVISION = "1d952420fba87f3c6dee4f240de0f1a0fbc790e3"
+TIMESFM_HORIZON = "{{ horizon }}"
+TIMESFM_MAX_CONTEXT = "{{ max_context }}"
+TIMESFM_LOCAL_FILES_ONLY = "true"
+
+# Legacy DEFAULT_CPUS/MEMORY/PIDS_LIMIT/SHM_SIZE. network/read_only_rootfs/
+# pull_policy keep the hardened defaults (isolated, true, missing), which
+# match the legacy wrapper exactly — the baked checkpoint means the node
+# never needs egress.
+[nodes.resources]
+cpus = 4.0
+memory = "8Gi"
+pids_limit = 512
+shm_size = "1Gi"
